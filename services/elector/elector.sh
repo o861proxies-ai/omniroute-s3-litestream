@@ -49,7 +49,8 @@ INSTANCE_ID=$(cat "$_ID_FILE")
 
 # Docker Compose lowercases project name → match chính xác
 PROJECT=$(echo "${COMPOSE_PROJECT_NAME:-omniroute-s3-litestream}" \
-          | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')
+          | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' \
+          | sed 's/^-*//; s/-*$//')
 
 LOCK_KEY="${LEADER_LOCK_KEY:-leader-lock-${PROJECT}}"
 LOCK_TTL="${LEADER_LOCK_TTL:-30}"        # giây — TTL của distributed lock
@@ -199,7 +200,10 @@ rtdb_get() {
   # GET lock node, lưu ETag vào LAST_ETAG
   local url body
   url=$(_build_url "$LOCK_KEY")
-  body=$(curl -sf --max-time 10 -D /tmp/rtdb-resp-hdr "$url" 2>/dev/null || echo "null")
+  body=$(curl -sS --max-time 10 \
+    -H "X-Firebase-ETag: true" \
+    -D /tmp/rtdb-resp-hdr \
+    "$url" 2>/dev/null || echo "null")
   LAST_ETAG=$(grep -i '^etag:' /tmp/rtdb-resp-hdr 2>/dev/null \
     | tr -d '\r\n' | sed "s/.*\"\\([^\"]*\\)\".*/\\1/" || echo "")
   echo "$body"
@@ -220,13 +224,14 @@ rtdb_conditional_put() {
   # Return: HTTP status code (200=win, 412=lost, 000=error)
   local url
   url=$(_build_url "$LOCK_KEY")
-  curl -sf --max-time 10 \
+  curl -sS --max-time 10 \
     -o /dev/null -w "%{http_code}" \
     -X PUT \
     -H "If-Match: \"${LAST_ETAG}\"" \
     -H "Content-Type: application/json" \
     -d "$1" \
-    "$url" 2>/dev/null || echo "000"
+    "$url" 2>/dev/null \
+    || echo "000"
 }
 
 rtdb_delete() {
