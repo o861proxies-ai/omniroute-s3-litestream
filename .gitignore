@@ -1,8 +1,8 @@
 # Bỏ qua mọi file trong app/data/
-app/data/*
+data/*
 
 # Nhưng giữ lại .gitkeep
-!app/data/.gitkeep
+!data/.gitkeep
 
 # ── Node.js ──────────────────────────────────────────
 node_modules/
