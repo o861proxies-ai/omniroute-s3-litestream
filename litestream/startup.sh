@@ -50,26 +50,57 @@ else
 
     # Dùng -if-replica-exists để litestream tự chọn path từ config
     # KHÔNG dùng -o để tránh lỗi "output path already exists"
+    #
+    # Edge-case thực tế:
+    # - Khi container bị restart/đua start, DB file có thể xuất hiện ngay trước restore.
+    # - Litestream sẽ fail với "output path already exists".
+    # => xử lý: xoá file đích (nếu có) và retry 1 lần duy nhất.
+    RESTORE_LOG="/tmp/litestream-restore.log"
+    rm -f "${RESTORE_LOG}"
+    rm -f "${DB_PATH}"
+
     if litestream restore \
         -config "${CONFIG_PATH}" \
         -if-replica-exists \
-        "${DB_PATH}"; then
+        "${DB_PATH}" >"${RESTORE_LOG}" 2>&1; then
 
       DB_SIZE=$(du -sh "${DB_PATH}" 2>/dev/null | cut -f1 || echo "?")
       echo "[startup] ✅ Restore thành công (${DB_SIZE})"
 
     else
       EXIT_CODE=$?
-      echo "[startup] ════════════════════════════════════"
-      echo "[startup] ✖ FATAL: Restore THẤT BẠI (exit ${EXIT_CODE})"
-      echo "[startup]"
-      echo "[startup] Kiểm tra:"
-      echo "[startup]   1. LITESTREAM_ACCESS_KEY_ID và SECRET có đúng không?"
-      echo "[startup]   2. SUPABASE_PROJECT_REF có đúng không?"
-      echo "[startup]   3. Network có reach được Supabase S3 không?"
-      echo "[startup]   4. Bucket '${LITESTREAM_BUCKET:-?}' có tồn tại không?"
-      echo "[startup] ════════════════════════════════════"
-      exit 1
+
+      if grep -q "output path already exists" "${RESTORE_LOG}" 2>/dev/null; then
+        echo "[startup] ⚠ Restore fail do output path exists — retry 1 lần..."
+        rm -f "${DB_PATH}"
+
+        if litestream restore \
+            -config "${CONFIG_PATH}" \
+            -if-replica-exists \
+            "${DB_PATH}" >"${RESTORE_LOG}" 2>&1; then
+          DB_SIZE=$(du -sh "${DB_PATH}" 2>/dev/null | cut -f1 || echo "?")
+          echo "[startup] ✅ Restore thành công sau retry (${DB_SIZE})"
+        else
+          EXIT_CODE=$?
+          echo "[startup] ════════════════════════════════════"
+          echo "[startup] ✖ FATAL: Restore THẤT BẠI sau retry (exit ${EXIT_CODE})"
+          sed 's/^/[startup] /' "${RESTORE_LOG}" || true
+          echo "[startup] ════════════════════════════════════"
+          exit 1
+        fi
+      else
+        echo "[startup] ════════════════════════════════════"
+        echo "[startup] ✖ FATAL: Restore THẤT BẠI (exit ${EXIT_CODE})"
+        sed 's/^/[startup] /' "${RESTORE_LOG}" || true
+        echo "[startup]"
+        echo "[startup] Kiểm tra:"
+        echo "[startup]   1. LITESTREAM_ACCESS_KEY_ID và SECRET có đúng không?"
+        echo "[startup]   2. SUPABASE_PROJECT_REF có đúng không?"
+        echo "[startup]   3. Network có reach được Supabase S3 không?"
+        echo "[startup]   4. Bucket '${LITESTREAM_BUCKET:-?}' có tồn tại không?"
+        echo "[startup] ════════════════════════════════════"
+        exit 1
+      fi
     fi
 
   else
