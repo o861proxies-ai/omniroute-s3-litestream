@@ -1,6 +1,5 @@
 ##############################################################
 # docker-compose.yml — Production (Cloudflare Proxy)
-# SSL/HTTPS do Cloudflare xu ly — khong can Traefik
 ##############################################################
 
 services:
@@ -11,6 +10,9 @@ services:
     env_file: .env
     environment:
       - NEXT_PUBLIC_BASE_URL=${NEXT_PUBLIC_BASE_URL:-http://localhost:20128}
+      # ✅ Dấu / ở đầu BẮT BUỘC — thiếu / thì app ghi vào /app/app/data/ thay vì /app/data/
+      - DATA_DIR=/app/data
+      - OMNIROUTE_DISABLE_AUTO_BACKUP=true
     ports:
       - "${OMNIROUTE_PORT:-20128}:${OMNIROUTE_PORT:-20128}"
     volumes:
