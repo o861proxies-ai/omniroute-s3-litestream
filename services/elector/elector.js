@@ -4,13 +4,10 @@
 //
 // Leader Election Daemon — Firebase RTDB SSE (EventSource)
 //
-// Logic:
-//   • Mỗi instance ghi {timestamp} lên RTDB khi start + heartbeat liên tục
-//   • Lắng nghe SSE realtime — khi instances thay đổi, so sánh timestamp
-//   • Instance có timestamp MỚI NHẤT = LEADER
-//   • Instance cũ hơn = FOLLOWER: chỉ stop services, vẫn sống & heartbeat
-//   • Nếu leader biến mất (zombie) → follower mới nhất còn lại lên leader
-//   • Zombie cleanup: xóa entry không heartbeat > ZOMBIE_TTL_MS
+// Fix:
+//   • COMPOSE_PROJECT_NAME / INSTANCE_ID placeholder literal detection
+//   • Khi là leader bị demote: docker stop toàn bộ stack luôn
+//   • Zombie TTL dựa trên HEARTBEAT thực tế
 // ══════════════════════════════════════════════════════════════════════
 "use strict";
 
@@ -30,23 +27,34 @@ if (!RTDB_URL_RAW) {
 
 const urlObj = new URL(RTDB_URL_RAW);
 const RTDB_BASE = `${urlObj.protocol}//${urlObj.host}`;
-const RTDB_QUERY = urlObj.search; // "" hoặc "?auth=TOKEN"
+const RTDB_QUERY = urlObj.search; // "?auth=TOKEN" hoặc ""
 
-const COMPOSE_PROJECT = (process.env.COMPOSE_PROJECT_NAME || "omniroute-s3-litestream")
-  .toLowerCase()
-  .replace(/[^a-z0-9-]/g, "-")
-  .replace(/^-+|-+$/g, "");
+// ── Sanitize COMPOSE_PROJECT_NAME ─────────────────────────────────────
+// Nếu CI không inject đúng (placeholder literal) → tự detect từ hostname
+const _rawProject = (process.env.COMPOSE_PROJECT_NAME || "").trim();
+const COMPOSE_PROJECT =
+  _rawProject && _rawProject !== "COMPOSE_PROJECT_NAME"
+    ? _rawProject
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "-")
+        .replace(/^-+|-+$/g, "")
+    : (() => {
+        // Fallback: lấy từ hostname container (Docker đặt = project_service_n)
+        const hn = require("os").hostname();
+        const parts = hn.split("-");
+        // hostname dạng: projectname-elector-1 → lấy tất cả trừ 2 phần cuối
+        if (parts.length > 2) return parts.slice(0, -2).join("-");
+        return "omniroute-s3-litestream"; // last resort
+      })();
 
-const INSTANCE_ID = (() => {
-  const fromEnv = (process.env.INSTANCE_ID || "").trim();
-  // Tránh placeholder literal từ CI
-  if (fromEnv && fromEnv !== "INSTANCE_ID") return fromEnv;
-  return crypto.randomBytes(8).toString("hex");
-})();
+// ── Sanitize INSTANCE_ID ──────────────────────────────────────────────
+const _rawInstance = (process.env.INSTANCE_ID || "").trim();
+const INSTANCE_ID = _rawInstance && _rawInstance !== "INSTANCE_ID" ? _rawInstance : crypto.randomBytes(8).toString("hex");
 
 const LOCK_NODE = `leader-lock-${COMPOSE_PROJECT}/instances`;
 const HEARTBEAT_MS = parseInt(process.env.HEARTBEAT_INTERVAL || "10", 10) * 1000;
-const ZOMBIE_TTL_MS = parseInt(process.env.LEADER_LOCK_TTL || "30", 10) * 3 * 1000;
+// Zombie = instance không heartbeat quá 3 × heartbeat interval
+const ZOMBIE_TTL_MS = HEARTBEAT_MS * 3;
 
 const LEADER_SVCS = ["litestream", "omniroute", "cloudflared"];
 const FOLLOWER_STOP = ["cloudflared", "omniroute", "litestream"];
@@ -144,7 +152,7 @@ function electLeader(instances) {
 // 5. Docker helpers
 // ──────────────────────────────────────────────────────────────────────
 function dockerExec(args, { silent = false } = {}) {
-  const r = spawnSync("docker", args, { encoding: "utf8", timeout: 15000 });
+  const r = spawnSync("docker", args, { encoding: "utf8", timeout: 30000 });
   if (!silent && r.stderr && r.status !== 0) process.stderr.write(r.stderr);
   return { ok: r.status === 0, stdout: (r.stdout || "").trim() };
 }
@@ -183,7 +191,7 @@ function getHealth(service) {
 function svcStart(service) {
   const cname = getContainerName(service);
   if (!cname) {
-    warn(`Container không tìm thấy: ${service}`);
+    warn(`Container không tìm thấy: ${service} (project=${COMPOSE_PROJECT})`);
     return false;
   }
   if (isRunning(service)) {
@@ -197,9 +205,9 @@ function svcStart(service) {
 }
 
 function svcStop(service, graceSeconds = 10) {
-  if (!isRunning(service)) return;
   const cname = getContainerName(service);
   if (!cname) return;
+  if (!isRunning(service)) return;
   log(`■ Stopping ${service} (grace=${graceSeconds}s)...`);
   const r = dockerExec(["stop", "-t", String(graceSeconds), cname]);
   r.ok ? log(`  ✅ ${service} stopped`) : warn(`  ✖ Failed stop: ${service}`);
@@ -244,11 +252,12 @@ async function onBecomeLeader() {
     IS_LEADER = true;
     log("══════════════════════════════════════");
     log(`🎉 LEADER — ${INSTANCE_ID}`);
+    log(`   Project: ${COMPOSE_PROJECT}`);
     log("══════════════════════════════════════");
 
     svcStart("litestream");
     const ok = await waitHealthy("litestream", 180);
-    if (!ok) warn("Litestream chưa healthy — tiếp tục...");
+    if (!ok) warn("Litestream chưa healthy — tiếp tục start app...");
 
     svcStart("omniroute");
     svcStart("cloudflared");
@@ -267,12 +276,14 @@ async function onBecomeFollower(reason = "") {
     log(`📡 FOLLOWER — ${INSTANCE_ID}${reason ? ` (${reason})` : ""}`);
     log("══════════════════════════════════════");
 
+    // Stop toàn bộ managed services
+    // Cloudflare trước → Cloudflare ngừng route traffic ngay
     svcStop("cloudflared", 10);
     svcStop("omniroute", 35);
     svcStop("litestream", 15);
 
-    // KHÔNG xóa RTDB entry — vẫn heartbeat, sẵn sàng lên leader
-    log("✅ FOLLOWER — hot standby");
+    // KHÔNG xóa RTDB entry — vẫn heartbeat, sẵn sàng lên leader nếu leader kia chết
+    log("✅ FOLLOWER — hot standby (services stopped)");
   } finally {
     _transitioning = false;
   }
@@ -289,7 +300,7 @@ function leaderHealthCheck() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// 7. Evaluate role từ snapshot instances
+// 7. Evaluate role từ snapshot
 // ──────────────────────────────────────────────────────────────────────
 let _evaluating = false;
 
@@ -299,7 +310,7 @@ async function evaluateRole(instances) {
   try {
     await cleanupZombies(instances);
 
-    // Đọc lại sau cleanup để có snapshot sạch nhất
+    // Đọc lại sau cleanup để snapshot sạch
     let live = instances;
     try {
       const snap = await rtdbGet(LOCK_NODE);
@@ -374,7 +385,7 @@ function startSSE() {
         if (t.startsWith("event:")) {
           eventName = t.slice(6).trim();
         } else if (t.startsWith("data:")) {
-          handleSSEEvent(eventName || "put", t.slice(5).trim()).catch((e) => warn("SSE handler error:", e.message));
+          handleSSEEvent(eventName || "put", t.slice(5).trim()).catch((e) => warn("SSE handler:", e.message));
         }
       }
     });
@@ -384,13 +395,13 @@ function startSSE() {
       scheduleSSEReconnect(3000);
     });
     res.on("error", (e) => {
-      warn("SSE error:", e.message, "3s");
+      warn("SSE error:", e.message, "— 3s");
       scheduleSSEReconnect(3000);
     });
   });
 
   _sseReq.on("error", (e) => {
-    warn("SSE req error:", e.message);
+    warn("SSE req:", e.message);
     scheduleSSEReconnect(5000);
   });
   _sseReq.end();
@@ -427,14 +438,12 @@ async function handleSSEEvent(event, raw) {
 
   const instances = parsed?.data;
 
-  // Node bị xóa hoàn toàn → re-register
   if (!instances || typeof instances !== "object") {
     log("SSE: node rỗng — re-register");
     await registerSelf().catch((e) => warn("re-register:", e.message));
     return;
   }
 
-  // Entry của mình bị zombie-cleanup bởi instance khác → re-register
   if (!instances[INSTANCE_ID]) {
     log("SSE: entry mình bị xóa — re-register");
     await registerSelf().catch((e) => warn("re-register:", e.message));
@@ -445,13 +454,13 @@ async function handleSSEEvent(event, raw) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// 9. Heartbeat loop — fallback khi SSE miss event
+// 9. Heartbeat loop
 // ──────────────────────────────────────────────────────────────────────
 async function heartbeatLoop() {
   while (true) {
     await sleep(HEARTBEAT_MS);
     try {
-      await heartbeatSelf(); // Luôn update timestamp dù là leader hay follower
+      await heartbeatSelf();
 
       if (IS_LEADER) {
         leaderHealthCheck();
@@ -460,7 +469,7 @@ async function heartbeatLoop() {
         log(`💤 Heartbeat — follower`);
       }
 
-      // Fallback evaluate từ snapshot (bắt SSE miss)
+      // Fallback: evaluate từ snapshot (bắt SSE miss)
       const snap = await rtdbGet(LOCK_NODE);
       if (snap.status === 200 && snap.body && typeof snap.body === "object") {
         await evaluateRole(snap.body);
@@ -488,12 +497,12 @@ async function shutdown(signal) {
   }
   if (_sseReconnectTimer) clearTimeout(_sseReconnectTimer);
 
-  // Dù leader hay follower đều stop services + xóa entry để không zombie
   if (IS_LEADER) {
     svcStop("cloudflared", 5);
     svcStop("omniroute", 10);
     svcStop("litestream", 10);
   }
+  // Xóa entry khi shutdown để follower khác không phải chờ zombie TTL
   await rtdbDelete(`${LOCK_NODE}/${INSTANCE_ID}`).catch(() => {});
   log(`Goodbye — ${INSTANCE_ID}`);
   process.exit(0);
@@ -504,8 +513,6 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("uncaughtException", (e) => warn("uncaughtException:", e.message));
 process.on("unhandledRejection", (r) => warn("unhandledRejection:", r));
 
-// ──────────────────────────────────────────────────────────────────────
-// Helpers
 // ──────────────────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -523,7 +530,12 @@ async function main() {
   log(`║ Zombie TTL : ${ZOMBIE_TTL_MS / 1000}s`);
   log("╚══════════════════════════════════════╝");
 
-  // Dừng tất cả services — elector kiểm soát hoàn toàn
+  // Cảnh báo nếu project vẫn là fallback
+  if (COMPOSE_PROJECT === "omniroute-s3-litestream") {
+    warn("COMPOSE_PROJECT_NAME không được inject đúng — dùng fallback hostname detection");
+  }
+
+  // Dừng tất cả services
   log("Init: dừng tất cả managed services...");
   for (const svc of FOLLOWER_STOP) {
     try {
@@ -532,23 +544,18 @@ async function main() {
   }
   log("Init done");
 
-  // Register mình
   await registerSelf();
 
-  // Đọc snapshot + evaluate lần đầu
   try {
     const snap = await rtdbGet(LOCK_NODE);
     const instances = snap.status === 200 && snap.body && typeof snap.body === "object" ? snap.body : { [INSTANCE_ID]: makeSelfPayload() };
     await evaluateRole(instances);
   } catch (e) {
-    warn("Init evaluate error:", e.message, "— assume leader");
+    warn("Init evaluate:", e.message, "— assume leader");
     await onBecomeLeader();
   }
 
-  // SSE realtime
   startSSE();
-
-  // Heartbeat (fallback)
   heartbeatLoop().catch((e) => warn("Heartbeat fatal:", e.message));
 
   log("🚀 Elector running");
