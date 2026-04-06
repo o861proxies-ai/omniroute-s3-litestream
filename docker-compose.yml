@@ -105,6 +105,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    depends_on:
+    litestream:
+      condition: service_healthy
 
   # ================================================================
   #  LITESTREAM — Managed by elector
@@ -147,41 +150,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-  # ================================================================
-  #  LITESTREAM — Managed by elector
-  #
-  #  CRITICAL: Chỉ 1 instance litestream được replicate tại 1 lúc
-  #  → elector đảm bảo điều này qua leader election
-  #
-  #  startup.sh flow:
-  #    1. Check S3 có snapshot không (hard fail nếu S3 error)
-  #    2. Nếu có → restore (fail hard nếu error, không start với DB rỗng)
-  #    3. exec litestream replicate
-  # ================================================================
-  # litestream:
-  #   image: litestream/litestream:latest
-  #   container_name: litestream
-  #   restart: "no"   # ← elector controls this
-  #   env_file: .env
-  #   volumes:
-  #     - ./data:/app/data
-  #     - ./litestream/litestream.yml:/etc/litestream.yml:ro
-  #     - ./litestream/startup.sh:/startup.sh:ro
-  #   entrypoint: ["/bin/sh", "/startup.sh"]
-  #   healthcheck:
-  #     # Healthy khi litestream replicate đang chạy và DB được track
-  #     test:
-  #       - "CMD-SHELL"
-  #       - "litestream databases -config /etc/litestream.yml 2>/dev/null | grep -q storage.sqlite"
-  #     interval: 10s
-  #     timeout: 10s
-  #     retries: 12         # 12 × 10s = 120s grace
-  #     start_period: 120s  # Cho phép restore lớn (tăng nếu DB > 500MB)
-  #   logging:
-  #     driver: json-file
-  #     options:
-  #       max-size: "10m"
-  #       max-file: "3"
 
   # ================================================================
   #  DOZZLE — Xem log realtime của tất cả container
