@@ -2,10 +2,10 @@ tunnel: c93d0c1b-5e75-4bd6-ad40-31fc324957b5
 credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
-  - hostname: dhomniroute.dpdns.org
-    service: http://host.docker.internal:20128
   - hostname: dozzle.dhomniroute.dpdns.org
     service: http://dozzle:8080
   - hostname: files.dhomniroute.dpdns.org
     service: http://filebrowser:80
+  - hostname: dhomniroute.dpdns.org
+    service: http://host.docker.internal:20128
   - service: http_status:404
