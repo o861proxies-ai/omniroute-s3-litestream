@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ================================================================
       #  STEP 1 — Pull .env & credentials từ RTDB
@@ -129,7 +129,7 @@ jobs:
 
       - name: Upload docker runtime artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: docker-runtime
           path: artifacts/docker-runtime

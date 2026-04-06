@@ -66,6 +66,7 @@ services:
   #    → Cloudflare tự route traffic sang instance có cloudflared running
   #    → Đây là cơ chế failover tự động
   # ================================================================
+  # docker-compose.yml — cloudflared service
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: ${COMPOSE_PROJECT_NAME:-msi}-cloudflared

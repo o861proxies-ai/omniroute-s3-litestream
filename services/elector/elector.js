@@ -34,24 +34,21 @@ const COMPOSE_PROJECT =
       })();
 
 const _rawInstance = (process.env.INSTANCE_ID || "").trim();
-const INSTANCE_ID =
-  _rawInstance && _rawInstance !== "INSTANCE_ID"
-    ? _rawInstance
-    : crypto.randomBytes(8).toString("hex");
+const INSTANCE_ID = _rawInstance && _rawInstance !== "INSTANCE_ID" ? _rawInstance : crypto.randomBytes(8).toString("hex");
 
 const LOCK_NODE = `leader-lock-${COMPOSE_PROJECT}/instances`;
-const LEADER_SVCS  = ["litestream", "omniroute", "cloudflared"];
+const LEADER_SVCS = ["litestream", "omniroute", "cloudflared"];
 const FOLLOWER_STOP = ["cloudflared", "omniroute", "litestream"];
 
 // Compose file & env — mounted vào elector container từ host workspace
 const COMPOSE_FILE = "/workspace/docker-compose.yml";
-const ENV_FILE     = "/workspace/.env";
+const ENV_FILE = "/workspace/.env";
 
 // ──────────────────────────────────────────────────────────────────────
 // 2. Logging
 // ──────────────────────────────────────────────────────────────────────
-const ts  = () => new Date().toTimeString().slice(0, 8);
-const log  = (...a) => console.log(`[elector ${ts()}]`, ...a);
+const ts = () => new Date().toTimeString().slice(0, 8);
+const log = (...a) => console.log(`[elector ${ts()}]`, ...a);
 const warn = (...a) => console.error(`[elector ${ts()}] ⚠`, ...a);
 
 // ──────────────────────────────────────────────────────────────────────
@@ -63,8 +60,8 @@ function buildUrl(path) {
 
 function rtdbRequest(method, path, body = null, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
-    const url  = new URL(buildUrl(path));
-    const lib  = url.protocol === "https:" ? https : http;
+    const url = new URL(buildUrl(path));
+    const lib = url.protocol === "https:" ? https : http;
     const opts = {
       hostname: url.hostname,
       port: url.port || (url.protocol === "https:" ? 443 : 80),
@@ -76,25 +73,31 @@ function rtdbRequest(method, path, body = null, timeoutMs = 10000) {
       let data = "";
       res.on("data", (c) => (data += c));
       res.on("end", () => {
-        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
-        catch { resolve({ status: res.statusCode, body: data }); }
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch {
+          resolve({ status: res.statusCode, body: data });
+        }
       });
     });
-    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error("RTDB timeout")); });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      reject(new Error("RTDB timeout"));
+    });
     req.on("error", reject);
     if (body !== null) req.write(JSON.stringify(body));
     req.end();
   });
 }
 
-const rtdbGet    = (path)       => rtdbRequest("GET",    path);
-const rtdbPut    = (path, body) => rtdbRequest("PUT",    path, body);
-const rtdbDelete = (path)       => rtdbRequest("DELETE", path);
+const rtdbGet = (path) => rtdbRequest("GET", path);
+const rtdbPut = (path, body) => rtdbRequest("PUT", path, body);
+const rtdbDelete = (path) => rtdbRequest("DELETE", path);
 
 // ──────────────────────────────────────────────────────────────────────
 // 4. Instance registry
 // ──────────────────────────────────────────────────────────────────────
-const REGISTERED_AT  = Date.now();
+const REGISTERED_AT = Date.now();
 const makeSelfPayload = () => ({ registered_at: REGISTERED_AT });
 
 async function registerSelf() {
@@ -104,10 +107,13 @@ async function registerSelf() {
 
 function electLeader(instances) {
   let leader = null;
-  let maxTs  = -1;
+  let maxTs = -1;
   for (const [id, data] of Object.entries(instances || {})) {
     const t = Number(data?.registered_at || 0);
-    if (t > maxTs) { maxTs = t; leader = id; }
+    if (t > maxTs) {
+      maxTs = t;
+      leader = id;
+    }
   }
   return leader;
 }
@@ -131,32 +137,16 @@ function dockerExec(args, { silent = false, timeout = 90000 } = {}) {
 }
 
 // ── Docker Compose helpers ────────────────────────────────────────────
-// Elector mount workspace vào /workspace nên có thể gọi compose trực tiếp
-
 function composeExec(args, opts = {}) {
-  return dockerExec(
-    ["compose", "-f", COMPOSE_FILE, "--env-file", ENV_FILE, "-p", COMPOSE_PROJECT, ...args],
-    opts,
-  );
+  return dockerExec(["compose", "-f", COMPOSE_FILE, "--env-file", ENV_FILE, "-p", COMPOSE_PROJECT, ...args], opts);
 }
 
-/**
- * Stop + remove một service container.
- * Giống: docker compose stop <svc> && docker compose rm -f <svc>
- * Dùng để đảm bảo container cũ bị xóa hoàn toàn, không chỉ dừng.
- */
 function composeStopRemove(service, graceSec = 10) {
   log(`  ■ compose stop ${service} (grace=${graceSec}s)`);
-  // Stop với grace period
   composeExec(["stop", "-t", String(graceSec), service], { silent: true, timeout: (graceSec + 30) * 1000 });
-  // Remove container (force, không hỏi)
   composeExec(["rm", "-f", service], { silent: true, timeout: 30000 });
 }
 
-/**
- * Dừng + xóa danh sách services theo thứ tự.
- * Tương đương `docker compose down <svcs>` nhưng explicit hơn.
- */
 function composeDown(services) {
   log(`🔽 compose down [${services.join(", ")}]`);
   for (const svc of services) {
@@ -166,17 +156,10 @@ function composeDown(services) {
   log("  ✅ compose down done");
 }
 
-/**
- * Tạo mới + start một service container.
- * Tương đương `docker compose up -d <svc>`
- * Gọi sau composeDown để đảm bảo container được tạo từ đầu (clean state).
- */
 function composeUp(service) {
   log(`🔼 compose up -d ${service}`);
   const r = composeExec(["up", "-d", service]);
-  r.ok
-    ? log(`  ✅ ${service} up`)
-    : warn(`  ✖ compose up failed: ${service} — stdout: ${r.stdout}`);
+  r.ok ? log(`  ✅ ${service} up`) : warn(`  ✖ compose up failed: ${service} — stdout: ${r.stdout}`);
   return r.ok;
 }
 
@@ -184,10 +167,14 @@ function composeUp(service) {
 function getContainerName(service) {
   const r = dockerExec(
     [
-      "ps", "-a",
-      "--filter", `label=com.docker.compose.service=${service}`,
-      "--filter", `label=com.docker.compose.project=${COMPOSE_PROJECT}`,
-      "--format", "{{.Names}}",
+      "ps",
+      "-a",
+      "--filter",
+      `label=com.docker.compose.service=${service}`,
+      "--filter",
+      `label=com.docker.compose.project=${COMPOSE_PROJECT}`,
+      "--format",
+      "{{.Names}}",
     ],
     { silent: true },
   );
@@ -204,13 +191,22 @@ function isRunning(service) {
 function getHealth(service) {
   const cname = getContainerName(service);
   if (!cname) return "missing";
-  const r = dockerExec(
-    ["inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}", cname],
-    { silent: true },
-  );
+  const r = dockerExec(["inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}", cname], { silent: true });
   return r.stdout || "unknown";
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// FIX 2: waitHealthy — retry khi "unhealthy", không thoát sớm
+//
+// Trước: unhealthy → resolve(false) ngay lập tức
+//   → waitLitestreamReady fail ngay khi litestream vừa start (đang trong
+//     start_period, health = unhealthy là bình thường)
+//   → omniroute được start trước khi restore xong
+//
+// Sau: unhealthy → retry cho đến timeout
+//   → chỉ thoát khi hết timeoutSec hoặc trạng thái là "missing"
+//     sau khi đã chờ đủ lâu
+// ──────────────────────────────────────────────────────────────────────
 function waitHealthy(service, timeoutSec = 180) {
   return new Promise((resolve) => {
     const POLL = 5000;
@@ -221,13 +217,12 @@ function waitHealthy(service, timeoutSec = 180) {
         log(`  ${service}: ${h} ✅`);
         return resolve(true);
       }
-      if (h === "unhealthy" || h === "missing") {
-        warn(`  ${service}: ${h}`);
-        return resolve(false);
-      }
+      // FIX 2: bỏ early-exit khi unhealthy/missing — luôn retry đến timeout
+      // Lý do: trong start_period (120s), litestream đang restore từ S3
+      //        nên health = "unhealthy" là bình thường, không phải lỗi cuối
       waited += POLL / 1000;
       if (waited >= timeoutSec) {
-        warn(`  ${service}: timeout sau ${timeoutSec}s`);
+        warn(`  ${service}: timeout sau ${timeoutSec}s (trạng thái cuối: ${h})`);
         return resolve(false);
       }
       log(`  ${service}: ${h} — ${waited}/${timeoutSec}s`);
@@ -240,11 +235,6 @@ function waitHealthy(service, timeoutSec = 180) {
 /**
  * Chờ litestream healthy VÀ xác nhận DB file tồn tại và có dữ liệu.
  * Đảm bảo S3 restore hoàn thành TRƯỚC khi omniroute được start.
- *
- * Flow litestream/startup.sh:
- *   restore from S3 → exec litestream replicate → healthcheck pass
- * → khi healthcheck pass, restore đã done rồi.
- * → DB file check là extra safety net.
  */
 async function waitLitestreamReady(timeoutSec = 180) {
   log(`⏳ Waiting litestream + S3 sync (max ${timeoutSec}s)...`);
@@ -264,11 +254,7 @@ async function waitLitestreamReady(timeoutSec = 180) {
   }
 
   const r = dockerExec(
-    [
-      "exec", cname,
-      "sh", "-c",
-      "test -f /app/data/storage.sqlite && test -s /app/data/storage.sqlite && echo DB_OK || echo DB_EMPTY",
-    ],
+    ["exec", cname, "sh", "-c", "test -f /app/data/storage.sqlite && test -s /app/data/storage.sqlite && echo DB_OK || echo DB_EMPTY"],
     { silent: true },
   );
 
@@ -278,12 +264,10 @@ async function waitLitestreamReady(timeoutSec = 180) {
   }
 
   if (r.stdout.includes("DB_EMPTY")) {
-    // DB rỗng là hợp lệ nếu S3 chưa có snapshot (fresh install)
     warn("litestream: healthy nhưng DB file rỗng (có thể là fresh install — tiếp tục)");
     return true;
   }
 
-  // exec failed
   warn("litestream: không thể kiểm tra DB file — tiếp tục cautiously");
   return true;
 }
@@ -291,8 +275,8 @@ async function waitLitestreamReady(timeoutSec = 180) {
 // ──────────────────────────────────────────────────────────────────────
 // 6. Role transitions
 // ──────────────────────────────────────────────────────────────────────
-let IS_LEADER    = false;
-let IS_RETIRED   = false;
+let IS_LEADER = false;
+let IS_RETIRED = false;
 let _transitioning = false;
 
 async function onBecomeLeader(instances) {
@@ -305,26 +289,18 @@ async function onBecomeLeader(instances) {
     log(`   Project: ${COMPOSE_PROJECT}`);
     log("══════════════════════════════════════════════");
 
-    // Prune old RTDB entries
     await pruneAllExceptSelf(instances);
 
-    // ── Step 1: compose down tất cả managed services ────────────────
-    // Xóa hoàn toàn container cũ (nếu có) để đảm bảo clean state.
-    // Quan trọng: tránh litestream cũ replicate lên S3 trong khi restore.
     log("🧹 compose down managed services (clean start)...");
     composeDown(LEADER_SVCS);
 
-    // ── Step 2: Start litestream (restore from S3 nếu cần) ──────────
     composeUp("litestream");
 
-    // ── Step 3: Chờ litestream healthy + DB verified ─────────────────
-    // CRITICAL: omniroute chỉ start SAU KHI litestream restore xong
     const dbReady = await waitLitestreamReady(180);
     if (!dbReady) {
       warn("⚠ litestream không ready — vẫn tiếp tục start app (có thể DB rỗng)");
     }
 
-    // ── Step 4: Start application services ───────────────────────────
     composeUp("omniroute");
     composeUp("cloudflared");
 
@@ -340,32 +316,37 @@ async function onFollowerRetire(reason = "") {
   if (IS_RETIRED || _transitioning) return;
   _transitioning = true;
   try {
-    IS_LEADER  = false;
+    IS_LEADER = false;
     IS_RETIRED = true;
 
     log("══════════════════════════════════════════════");
     log(`📡 FOLLOWER RETIRE — ${INSTANCE_ID}${reason ? ` (${reason})` : ""}`);
     log("══════════════════════════════════════════════");
 
-    // compose down — stop + remove tất cả managed containers
     composeDown(FOLLOWER_STOP);
 
-    // Xóa self entry khỏi RTDB
-    await rtdbDelete(`${LOCK_NODE}/${INSTANCE_ID}`).catch((e) =>
-      warn("delete self:", e.message),
-    );
+    await rtdbDelete(`${LOCK_NODE}/${INSTANCE_ID}`).catch((e) => warn("delete self:", e.message));
     log("🧼 Retired: containers removed + RTDB entry deleted");
   } finally {
     _transitioning = false;
   }
 }
 
-/**
- * Health monitor trong loop: nếu service crash, compose up lại.
- * Dùng composeUp thay vì docker start để tạo container mới (không chỉ restart).
- */
+// ──────────────────────────────────────────────────────────────────────
+// FIX 3: leaderHealthCheck — guard bằng _transitioning
+//
+// Trước: leaderHealthCheck() gọi ngay sau onBecomeLeader() kết thúc
+//   → _transitioning vừa set false, nhưng container vừa compose up
+//     chưa kịp chuyển sang Running
+//   → isRunning() = false → compose up lại thừa (double start)
+//
+// Sau: thêm guard _transitioning
+//   → nếu đang trong bất kỳ transition nào, skip health-check
+//   → tránh race condition giữa onBecomeLeader và leaderHealthCheck
+// ──────────────────────────────────────────────────────────────────────
 function leaderHealthCheck() {
-  if (!IS_LEADER || IS_RETIRED) return;
+  // FIX 3: thêm || _transitioning để tránh race ngay sau onBecomeLeader
+  if (!IS_LEADER || IS_RETIRED || _transitioning) return;
   for (const svc of LEADER_SVCS) {
     if (!isRunning(svc)) {
       warn(`${svc} không chạy — compose up lại`);
@@ -407,7 +388,7 @@ async function evaluateRole(instances) {
 // ──────────────────────────────────────────────────────────────────────
 // 8. SSE listener
 // ──────────────────────────────────────────────────────────────────────
-let _sseReq           = null;
+let _sseReq = null;
 let _sseReconnectTimer = null;
 
 function startSSE() {
@@ -419,8 +400,8 @@ function startSSE() {
   }
 
   const sseUrl = new URL(buildUrl(LOCK_NODE));
-  const lib    = sseUrl.protocol === "https:" ? https : http;
-  const opts   = {
+  const lib = sseUrl.protocol === "https:" ? https : http;
+  const opts = {
     hostname: sseUrl.hostname,
     port: sseUrl.port || (sseUrl.protocol === "https:" ? 443 : 80),
     path: sseUrl.pathname + sseUrl.search,
@@ -438,7 +419,7 @@ function startSSE() {
     }
     log("✅ SSE connected");
 
-    let buf       = "";
+    let buf = "";
     let eventName = "";
 
     res.on("data", (chunk) => {
@@ -448,30 +429,49 @@ function startSSE() {
 
       for (const line of lines) {
         const t = line.trim();
-        if (!t) { eventName = ""; continue; }
+        if (!t) {
+          eventName = "";
+          continue;
+        }
         if (t.startsWith("event:")) {
           eventName = t.slice(6).trim();
         } else if (t.startsWith("data:")) {
-          handleSSEEvent(eventName || "put", t.slice(5).trim()).catch((e) =>
-            warn("SSE handler:", e.message),
-          );
+          handleSSEEvent(eventName || "put", t.slice(5).trim()).catch((e) => warn("SSE handler:", e.message));
         }
       }
     });
 
-    res.on("end",   () => { if (!IS_RETIRED) { warn("SSE end — 3s");  scheduleSSEReconnect(3000); } });
-    res.on("error", (e) => { if (!IS_RETIRED) { warn("SSE err:", e.message, "— 3s"); scheduleSSEReconnect(3000); } });
+    res.on("end", () => {
+      if (!IS_RETIRED) {
+        warn("SSE end — 3s");
+        scheduleSSEReconnect(3000);
+      }
+    });
+    res.on("error", (e) => {
+      if (!IS_RETIRED) {
+        warn("SSE err:", e.message, "— 3s");
+        scheduleSSEReconnect(3000);
+      }
+    });
   });
 
   _sseReq.on("error", (e) => {
-    if (!IS_RETIRED) { warn("SSE req:", e.message); scheduleSSEReconnect(5000); }
+    if (!IS_RETIRED) {
+      warn("SSE req:", e.message);
+      scheduleSSEReconnect(5000);
+    }
   });
   _sseReq.end();
 }
 
 function scheduleSSEReconnect(ms) {
   if (IS_RETIRED) return;
-  if (_sseReq) { try { _sseReq.destroy(); } catch {} _sseReq = null; }
+  if (_sseReq) {
+    try {
+      _sseReq.destroy();
+    } catch {}
+    _sseReq = null;
+  }
   _sseReconnectTimer = setTimeout(startSSE, ms);
 }
 
@@ -482,7 +482,7 @@ function shouldEvaluateFromEvent(parsed) {
   if (path === "/") return true;
 
   if (/^\/[^/]+$/.test(path)) {
-    const isJoin  = data && typeof data === "object" && data.registered_at;
+    const isJoin = data && typeof data === "object" && data.registered_at;
     const isLeave = data === null;
     return isJoin || isLeave;
   }
@@ -493,11 +493,23 @@ function shouldEvaluateFromEvent(parsed) {
 async function handleSSEEvent(event, raw) {
   if (IS_RETIRED) return;
 
-  if (event === "cancel") { warn("SSE cancel"); scheduleSSEReconnect(5000); return; }
-  if (event === "auth_revoked") { warn("SSE auth_revoked"); scheduleSSEReconnect(10000); return; }
+  if (event === "cancel") {
+    warn("SSE cancel");
+    scheduleSSEReconnect(5000);
+    return;
+  }
+  if (event === "auth_revoked") {
+    warn("SSE auth_revoked");
+    scheduleSSEReconnect(10000);
+    return;
+  }
 
   let parsed;
-  try { parsed = JSON.parse(raw); } catch { return; }
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
 
   if (!shouldEvaluateFromEvent(parsed)) return;
 
@@ -513,13 +525,17 @@ async function handleSSEEvent(event, raw) {
   }
 
   const snap = await rtdbGet(LOCK_NODE);
-  const live =
-    snap.status === 200 && snap.body && typeof snap.body === "object"
-      ? snap.body
-      : null;
+  const live = snap.status === 200 && snap.body && typeof snap.body === "object" ? snap.body : null;
 
-  if (!live) { warn("Node trống — register lại self"); await registerSelf(); return; }
-  if (!live[INSTANCE_ID] && !IS_LEADER) { await onFollowerRetire("self missing after refresh"); return; }
+  if (!live) {
+    warn("Node trống — register lại self");
+    await registerSelf();
+    return;
+  }
+  if (!live[INSTANCE_ID] && !IS_LEADER) {
+    await onFollowerRetire("self missing after refresh");
+    return;
+  }
   await evaluateRole(live);
 }
 
@@ -533,10 +549,15 @@ async function shutdown(signal) {
   _shuttingDown = true;
   log(`🛑 Shutdown (${signal})`);
 
-  if (_sseReq)           { try { _sseReq.destroy(); } catch {} }
-  if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); }
+  if (_sseReq) {
+    try {
+      _sseReq.destroy();
+    } catch {}
+  }
+  if (_sseReconnectTimer) {
+    clearTimeout(_sseReconnectTimer);
+  }
 
-  // compose down: stop + remove managed containers
   composeDown(FOLLOWER_STOP);
 
   await rtdbDelete(`${LOCK_NODE}/${INSTANCE_ID}`).catch(() => {});
@@ -545,8 +566,8 @@ async function shutdown(signal) {
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT",  () => shutdown("SIGINT"));
-process.on("uncaughtException",  (e) => warn("uncaughtException:",  e.message));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("uncaughtException", (e) => warn("uncaughtException:", e.message));
 process.on("unhandledRejection", (r) => warn("unhandledRejection:", r));
 
 // ──────────────────────────────────────────────────────────────────────
@@ -554,7 +575,7 @@ process.on("unhandledRejection", (r) => warn("unhandledRejection:", r));
 // ──────────────────────────────────────────────────────────────────────
 async function main() {
   log("╔══════════════════════════════════════════════════╗");
-  log("║ Leader Elector v4 (compose down/up + DB verify)  ║");
+  log("║ Leader Elector v5 (fix waitHealthy + healthCheck) ║");
   log("╠══════════════════════════════════════════════════╣");
   log(`║ Instance      : ${INSTANCE_ID}`);
   log(`║ Project       : ${COMPOSE_PROJECT}`);
@@ -567,22 +588,14 @@ async function main() {
     warn("COMPOSE_PROJECT_NAME không được inject — dùng fallback hostname");
   }
 
-  // ── Init: compose down toàn bộ managed services ───────────────────
-  // Đảm bảo clean state khi elector khởi động, tránh container cũ
-  // vẫn chạy và replicate lên S3 khi chưa xác nhận được leader.
   log("Init: compose down managed services (clean start)...");
   composeDown(FOLLOWER_STOP);
 
-  // Register lên RTDB
   await registerSelf();
 
-  // Evaluate ngay từ snapshot hiện tại
   try {
     const snap = await rtdbGet(LOCK_NODE);
-    const instances =
-      snap.status === 200 && snap.body && typeof snap.body === "object"
-        ? snap.body
-        : { [INSTANCE_ID]: makeSelfPayload() };
+    const instances = snap.status === 200 && snap.body && typeof snap.body === "object" ? snap.body : { [INSTANCE_ID]: makeSelfPayload() };
     await evaluateRole(instances);
   } catch (e) {
     warn("Init evaluate:", e.message, "— assume leader");
