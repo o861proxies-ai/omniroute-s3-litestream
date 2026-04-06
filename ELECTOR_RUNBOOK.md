@@ -46,10 +46,14 @@ Tài liệu này mô tả **luồng hoạt động thực tế** của `elector`
 6. **Khi Leader mất lock / shutdown**
    - Demote về follower:
      - stop toàn bộ service không thuộc `ELECTOR_KEEP_SERVICES`
+     - stop chính container `elector` của node hiện tại (mặc định bật)
    - Release lock (nếu đang giữ lock).
 
 > Có thể tùy chỉnh service được giữ lại bằng biến:
 > `ELECTOR_KEEP_SERVICES=elector,service_khac`
+>
+> Có thể tắt hành vi tự stop elector bằng:
+> `ELECTOR_STOP_SELF_ON_FOLLOWER=false`
 
 ### Luồng bảo vệ dữ liệu trong `litestream/startup.sh`
 

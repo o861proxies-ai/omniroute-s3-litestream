@@ -44,6 +44,7 @@ const KEEP_SERVICES = (process.env.ELECTOR_KEEP_SERVICES || "elector")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const STOP_SELF_ON_FOLLOWER = (process.env.ELECTOR_STOP_SELF_ON_FOLLOWER || "true").toLowerCase() === "true";
 
 // Compose file & env — mounted vào elector container từ host workspace
 const COMPOSE_FILE = "/workspace/docker-compose.yml";
@@ -218,6 +219,13 @@ function followerStopServices() {
   return FOLLOWER_STOP_FALLBACK.filter((svc) => !KEEP_SERVICES.includes(svc));
 }
 
+function stopSelfElector(reason = "") {
+  if (!STOP_SELF_ON_FOLLOWER) return;
+  const selfId = os.hostname();
+  log(`🛑 stopping self elector container${reason ? ` (${reason})` : ""}: ${selfId}`);
+  dockerExec(["stop", "-t", "5", selfId], { silent: true, timeout: 15000 });
+}
+
 // ── State inspection helpers ──────────────────────────────────────────
 function getContainerName(service) {
   const r = dockerExec(
@@ -381,6 +389,7 @@ async function onFollowerRetire(reason = "") {
 
     await rtdbDelete(`${LOCK_NODE}/${INSTANCE_ID}`).catch((e) => warn("delete self:", e.message));
     log("🧼 Retired: containers removed + RTDB entry deleted");
+    stopSelfElector("follower retire");
   } finally {
     _transitioning = false;
   }
